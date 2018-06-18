@@ -96,11 +96,11 @@ class UnitVector(Parameter):
         self.name = name
         with tf.name_scope(name, "UnitVector"):
             self.x = tf.Variable(x, dtype=dtype, name="x")
-            norm = tf.reduce_sum(tf.square(self.x))
+            norm = tf.reduce_sum(tf.square(self.x), axis=-1)
 
             self._parameters = [self.x]
-            self._value = self.x / tf.sqrt(norm)
-            self._log_jac = -0.5 * norm
+            self._value = self.x / tf.expand_dims(tf.sqrt(norm), -1)
+            self._log_jac = -0.5 * tf.reduce_sum(norm)
 
 
 class Model(object):
@@ -112,7 +112,7 @@ class Model(object):
         self._session = session
 
         self.target = target
-        for p in self.get_parameters(include_frozen=True):
+        for p in self._parameters:
             try:
                 self.target += p.log_jacobian
             except AttributeError:
@@ -182,3 +182,31 @@ class Model(object):
         return np.concatenate([
             np.reshape(v, s)
             for v, s in zip(values, self.sizes)])
+
+    def get_values_for_chain(self, chain, var_list=None, names=None):
+        self.update()
+
+        if var_list is None:
+            if names is None:
+                names = [p.name for p in self._parameters]
+            var_list = [p.value if hasattr(p, "value") else p
+                        for p in self._parameters]
+        elif names is None:
+            names = [v.name for v in var_list]
+
+        # Work out the dtype for the output chain
+        dtype = [(n, float, np.shape(v))
+                 for n, v in zip(names,
+                                 self.session.run(var_list,
+                                                  feed_dict=self._feed_dict))]
+
+        # Allocate the output chain
+        N = len(chain)
+        out_chain = np.empty(N, dtype=dtype)
+
+        # Loop over the chain and get the value at each sample
+        for i, s in enumerate(chain):
+            fd = self.vector_to_feed_dict(s)
+            for n, v in zip(names, self.session.run(var_list, feed_dict=fd)):
+                out_chain[n][i] = v
+        return out_chain
